@@ -12,13 +12,22 @@ from datetime import datetime, timedelta
 
 # --- CONFIG ---
 st.set_page_config(page_title="Nifty 500 Cloud Scanner", layout="wide")
+# Your specific Google Drive Folder ID
 FOLDER_ID = "1mx3Fr-MX1bno7-n0p066OVTmtYK6-E8R"
 
 # --- GOOGLE DRIVE CONNECTION ---
 def get_gdrive_service():
-    # This looks for the block you pasted into Streamlit Secrets
+    # REQUIRED: Explicitly tell Google we want to access the Drive API
+    SCOPES = ['https://www.googleapis.com/auth/drive']
+    
+    # Load credentials from Streamlit Secrets
     creds_info = st.secrets["gdrive_service_account"]
-    creds = service_account.Credentials.from_service_account_info(creds_info)
+    
+    # Authenticate with the specific Scopes
+    creds = service_account.Credentials.from_service_account_info(
+        creds_info, 
+        scopes=SCOPES
+    )
     return build('drive', 'v3', credentials=creds)
 
 def upload_to_drive(file_name, dataframe):
@@ -29,7 +38,7 @@ def upload_to_drive(file_name, dataframe):
     dataframe.to_parquet(buffer)
     buffer.seek(0)
     
-    # Check if file exists to update instead of create
+    # Check if file exists in your folder to update instead of create[cite: 1]
     query = f"name = '{file_name}' and '{FOLDER_ID}' in parents and trashed = false"
     results = service.files().list(q=query, fields="files(id)").execute()
     files = results.get('files', [])
@@ -37,15 +46,17 @@ def upload_to_drive(file_name, dataframe):
     media = MediaIoBaseUpload(buffer, mimetype='application/octet-stream', resumable=True)
     
     if files:
+        # Update existing file[cite: 1]
         file_id = files[0]['id']
         service.files().update(fileId=file_id, media_body=media).execute()
     else:
+        # Create new file in the specified folder[cite: 1]
         file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
         service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
 # --- DATA ENGINE ---
 def sync_market_to_drive():
-    # Starting with a core list; you can expand this to the full Nifty 500
+    # This list can be expanded to the full Nifty 500[cite: 1]
     tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "TATASTEEL.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS"] 
     
     progress_bar = st.progress(0)
@@ -55,18 +66,18 @@ def sync_market_to_drive():
         status_text.text(f"Processing {ticker}...")
         df = yf.download(ticker, period="2y", progress=False)
         if not df.empty:
+            # Flatten columns for 2026 yfinance compatibility[cite: 1]
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             upload_to_drive(f"{ticker}.parquet", df)
         progress_bar.progress((i + 1) / len(tickers))
     
     status_text.text("Sync Complete!")
-    st.success("All data successfully synced to Google Drive!")
+    st.success("All data successfully synced to Google Drive![cite: 1]")
 
 # --- UI ---
 st.title("🎯 Nifty 500 Drive-Synced Scanner")
 
-# THIS IS THE SIDEBAR SECTION YOU WERE LOOKING FOR
 with st.sidebar:
     st.header("Storage Control")
     if st.button("🔄 Sync Market to Google Drive"):
@@ -78,4 +89,4 @@ with st.sidebar:
     run_scan = st.button("🚀 Run Scan from Drive")
 
 if run_scan:
-    st.info("Scanner logic will appear here once data is synced.")
+    st.info("Scanner logic will appear here once data is fully synced to your Drive folder.[cite: 1]")
