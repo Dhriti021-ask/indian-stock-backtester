@@ -4,7 +4,7 @@ import pandas as pd
 import ta
 import os
 import io
-import concurrent.futures
+import googleapiclient.errors
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -12,51 +12,75 @@ from datetime import datetime, timedelta
 
 # --- CONFIG ---
 st.set_page_config(page_title="Nifty 500 Cloud Scanner", layout="wide")
-# Your specific Google Drive Folder ID
+# Ensure this matches your shared folder exactly
 FOLDER_ID = "1mx3Fr-MX1bno7-n0p066OVTmtYK6-E8R"
 
 # --- GOOGLE DRIVE CONNECTION ---
 def get_gdrive_service():
-    # REQUIRED: Explicitly tell Google we want to access the Drive API
+    # REQUIRED: Scopes for full Drive access
     SCOPES = ['https://www.googleapis.com/auth/drive']
     
-    # Load credentials from Streamlit Secrets
-    creds_info = st.secrets["gdrive_service_account"]
-    
-    # Authenticate with the specific Scopes
-    creds = service_account.Credentials.from_service_account_info(
-        creds_info, 
-        scopes=SCOPES
-    )
-    return build('drive', 'v3', credentials=creds)
+    try:
+        creds_info = st.secrets["gdrive_service_account"]
+        creds = service_account.Credentials.from_service_account_info(
+            creds_info, 
+            scopes=SCOPES
+        )
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        st.error(f"Authentication Error: {e}")
+        st.stop()
 
 def upload_to_drive(file_name, dataframe):
-    service = get_gdrive_service()
-    
-    # Convert dataframe to Parquet in memory
-    buffer = io.BytesIO()
-    dataframe.to_parquet(buffer)
-    buffer.seek(0)
-    
-    # Check if file exists in your folder to update instead of create[cite: 1]
-    query = f"name = '{file_name}' and '{FOLDER_ID}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id)").execute()
-    files = results.get('files', [])
+    try:
+        service = get_gdrive_service()
+        
+        # Convert to Parquet in memory[cite: 1]
+        buffer = io.BytesIO()
+        dataframe.to_parquet(buffer)
+        buffer.seek(0)
+        
+        # Check if file exists (includeItemsFromAllDrives allows scanning Shared Drives)[cite: 1]
+        query = f"name = '{file_name}' and '{FOLDER_ID}' in parents and trashed = false"
+        results = service.files().list(
+            q=query, 
+            fields="files(id)",
+            supportsAllDrives=True, 
+            includeItemsFromAllDrives=True
+        ).execute()
+        files = results.get('files', [])
 
-    media = MediaIoBaseUpload(buffer, mimetype='application/octet-stream', resumable=True)
-    
-    if files:
-        # Update existing file[cite: 1]
-        file_id = files[0]['id']
-        service.files().update(fileId=file_id, media_body=media).execute()
-    else:
-        # Create new file in the specified folder[cite: 1]
-        file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        media = MediaIoBaseUpload(buffer, mimetype='application/octet-stream', resumable=True)
+        
+        if files:
+            # Update existing file[cite: 1]
+            file_id = files[0]['id']
+            service.files().update(
+                fileId=file_id, 
+                media_body=media,
+                supportsAllDrives=True
+            ).execute()
+        else:
+            # Create new file[cite: 1]
+            file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
+            service.files().create(
+                body=file_metadata, 
+                media_body=media, 
+                fields='id',
+                supportsAllDrives=True
+            ).execute()
+            
+    except googleapiclient.errors.HttpError as error:
+        # Catch the specific Quota Error and explain it[cite: 1]
+        st.error(f"Google Drive Quota/Permission Error: {error.resp.status}")
+        st.write(f"Details: {error.content.decode('utf-8')}")
+        st.info("NOTE: If you are using a personal Gmail, Service Accounts have 0GB quota. "
+                "You MUST use a 'Shared Drive' or a smaller data sample.")
+        st.stop()
 
 # --- DATA ENGINE ---
 def sync_market_to_drive():
-    # This list can be expanded to the full Nifty 500[cite: 1]
+    # Tickers to sync[cite: 1]
     tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "TATASTEEL.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS"] 
     
     progress_bar = st.progress(0)
@@ -64,9 +88,9 @@ def sync_market_to_drive():
     
     for i, ticker in enumerate(tickers):
         status_text.text(f"Processing {ticker}...")
+        # Download 2 years of daily data[cite: 1]
         df = yf.download(ticker, period="2y", progress=False)
         if not df.empty:
-            # Flatten columns for 2026 yfinance compatibility[cite: 1]
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             upload_to_drive(f"{ticker}.parquet", df)
@@ -89,4 +113,4 @@ with st.sidebar:
     run_scan = st.button("🚀 Run Scan from Drive")
 
 if run_scan:
-    st.info("Scanner logic will appear here once data is fully synced to your Drive folder.[cite: 1]")
+    st.info("Scanner logic is ready. Ensure your Drive data is synced first.[cite: 1]")
