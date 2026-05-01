@@ -5,27 +5,29 @@ import ta
 import os
 from datetime import datetime, timedelta
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="FinBacktest India", layout="wide")
+# --- INITIAL CONFIGURATION ---
+st.set_page_config(page_title="India Backtest Pro", layout="wide")
 DATA_DIR = "market_data"
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# --- ENGINE: DATA MANAGEMENT ---
+# --- DATA ENGINE ---
 def get_data(ticker):
-    """Handles 2-year download and incremental daily updates"""
+    """Handles initial 2-year download and incremental updates"""
     path = os.path.join(DATA_DIR, f"{ticker}.parquet")
     
     if os.path.exists(path):
         df = pd.read_parquet(path)
         last_date = df.index.max()
-        # If the last data point is older than yesterday, fetch the gap
+        
+        # If the local data is older than yesterday, fetch only the missing piece
         if last_date.date() < (datetime.now() - timedelta(days=1)).date():
-            st.info(f"Checking for new data for {ticker}...")
+            st.info(f"Syncing new data for {ticker}...")
             new_data = yf.download(ticker, start=last_date + timedelta(days=1))
+            
             if not new_data.empty:
-                # Standardize columns to avoid MultiIndex issues in 2026 yfinance
+                # Handle potential MultiIndex columns in 2026 yfinance
                 if isinstance(new_data.columns, pd.MultiIndex):
                     new_data.columns = new_data.columns.get_level_values(0)
                 
@@ -34,36 +36,36 @@ def get_data(ticker):
                 df.to_parquet(path)
         return df
     else:
-        st.warning(f"Downloading 2-year history for {ticker}...")
+        st.warning(f"No local data. Downloading 2-year history for {ticker}...")
         df = yf.download(ticker, period="2y")
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.to_parquet(path)
         return df
 
-# --- ENGINE: BACKTEST LOGIC ---
+# --- BACKTEST ENGINE ---
 def run_backtest(df, logic):
-    """Calculates indicators and evaluates screener-style logic"""
-    # Create a copy to avoid modifying the original cached data
+    """Applies indicators and evaluates logic string"""
     test_df = df.copy()
     
-    # Calculate Indicators using the 'ta' library
+    # Calculate Pre-defined Indicators
     test_df['SMA_20'] = ta.trend.sma_indicator(test_df['Close'], window=20)
     test_df['SMA_50'] = ta.trend.sma_indicator(test_df['Close'], window=50)
     test_df['RSI'] = ta.momentum.rsi(test_df['Close'], window=14)
     
-    # Drop rows where indicators are NaN (the first 50 rows)
+    # Clean data (Remove NaNs before logic check)
     test_df = test_df.dropna()
     
     try:
-        # Evaluate "Screener" Logic (e.g., "Close > SMA_20 and RSI > 50")
+        # Step 1: Generate Signals
         test_df['Signal'] = test_df.eval(logic)
         
-        # Performance Calculation
+        # Step 2: Calculate Strategy Returns
         test_df['Market_Ret'] = test_df['Close'].pct_change()
-        # Shift signal by 1 day because you enter the day AFTER the signal
-        test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Market_Ret']
+        # Shift signal by 1 so we enter the trade on the NEXT day's price
+        test_df['Strategy_Ret'] = test_df['Signal'].shift(1).fillna(False) * test_df['Market_Ret']
         
+        # Step 3: Calculate Cumulative Wealth
         test_df['Cum_Market'] = (1 + test_df['Market_Ret'].fillna(0)).cumprod()
         test_df['Cum_Strategy'] = (1 + test_df['Strategy_Ret'].fillna(0)).cumprod()
         
@@ -72,59 +74,61 @@ def run_backtest(df, logic):
         st.error(f"Logic Error: Check your syntax. {e}")
         return None
 
-# --- USER INTERFACE ---
-st.title("📈 Indian Stock Market Backtester")
-st.caption("Custom Backtesting Tool - Zero Cost Infrastructure")
+# --- APP INTERFACE ---
+st.title("📈 Indian Stock Backtester")
+st.caption("Powered by Streamlit & Parquet - 100% Free Infrastructure")
 st.markdown("---")
 
 with st.sidebar:
-    st.header("Parameters")
-    ticker_input = st.text_input("NSE Ticker (with .NS)", "TATASTEEL.NS").upper()
+    st.header("Settings")
+    ticker = st.text_input("Ticker (e.g., RELIANCE.NS)", "TATASTEEL.NS").upper()
     
-    st.subheader("Strategy Logic")
+    st.subheader("Strategy Builder")
     logic_input = st.text_area(
-        "Enter Logic (Screener Style)", 
+        "Screener Logic", 
         value="Close > SMA_20 and RSI > 40",
-        help="Variables: Close, SMA_20, SMA_50, RSI"
+        help="Use: Close, SMA_20, SMA_50, RSI"
     )
     
-    st.info("💡 Hint: Use 'and', 'or', '>', '<', '=='")
-    
-    run_btn = st.button("🚀 Sync & Run Backtest", use_container_width=True)
+    st.markdown("---")
+    run_btn = st.button("🚀 Sync & Run", use_container_width=True)
 
-# --- EXECUTION & DISPLAY ---
+# --- RESULTS DISPLAY ---
 if run_btn:
     try:
-        # 1. Fetch/Update Data
-        data = get_data(ticker_input)
+        # Load and Backtest
+        raw_data = get_data(ticker)
+        results = run_backtest(raw_data, logic_input)
         
-        # 2. Run Analysis
-        result = run_backtest(data, logic_input)
-        
-        if result is not None:
-            # Metrics Row
-            m1, m2, m3 = st.columns(3)
-            strategy_pct = (result['Cum_Strategy'].iloc[-1] - 1) * 100
-            market_pct = (result['Cum_Market'].iloc[-1] - 1) * 100
+        if results is not None:
+            # Final data cleaning for the charts (Forces numeric types)
+            chart_df = results[['Cum_Strategy', 'Cum_Market']].astype(float)
             
-            m1.metric("Strategy Return", f"{strategy_pct:.2f}%", 
-                      delta=f"{strategy_pct - market_pct:.2f}% vs Market")
-            m2.metric("Market Return", f"{market_pct:.2f}%")
-            m3.metric("Trades Found", int(result['Signal'].sum()))
+            # 1. Summary Metrics
+            c1, c2, c3 = st.columns(3)
+            strat_perf = (chart_df['Cum_Strategy'].iloc[-1] - 1) * 100
+            mkt_perf = (chart_df['Cum_Market'].iloc[-1] - 1) * 100
             
-            # Charting
-            st.subheader("Equity Curve: Strategy vs Market")
-            st.line_chart(result[['Cum_Strategy', 'Cum_Market']])
+            c1.metric("Strategy Return", f"{strat_perf:.2f}%", delta=f"{strat_perf - mkt_perf:.2f}% vs Mkt")
+            c2.metric("Market Return", f"{mkt_perf:.2f}%")
+            c3.metric("Trades Count", int(results['Signal'].sum()))
             
-            # Data Table
-            st.subheader("Recent Signals")
-            st.dataframe(result[['Close', 'SMA_20', 'RSI', 'Signal']].tail(20), use_container_width=True)
+            # 2. The Equity Curve
+            st.subheader("Performance vs Market")
+            st.line_chart(chart_df)
             
-            # Backup Option
-            csv = result.to_csv().encode('utf-8')
-            st.download_button("📥 Download Backtest Results (CSV)", csv, f"backtest_{ticker_input}.csv")
+            # 3. Signals Table
+            st.subheader("Recent Trade Signals")
+            # Convert Boolean to String for better table display
+            table_df = results[['Close', 'SMA_20', 'RSI', 'Signal']].tail(15).copy()
+            table_df['Signal'] = table_df['Signal'].astype(str)
+            st.dataframe(table_df, use_container_width=True)
+            
+            # 4. Export
+            csv_data = results.to_csv().encode('utf-8')
+            st.download_button("📥 Download Full CSV", csv_data, f"{ticker}_backtest.csv")
             
     except Exception as e:
-        st.error(f"Execution Error: {e}")
+        st.error(f"Something went wrong: {e}")
 else:
-    st.write("👈 Configure your strategy and ticker in the sidebar, then click **Run**.")
+    st.info("Enter your ticker and logic on the left, then click 'Sync & Run'.")
