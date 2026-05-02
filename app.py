@@ -10,11 +10,14 @@ import google.oauth2.credentials
 
 # --- CONFIG ---
 st.set_page_config(page_title="Nifty Personal Drive Scanner", layout="wide")
-FOLDER_ID = "1mx3Fr-MX1bno7-n0p066OVTmtYK6-E8R" # Ensure this folder is in your Personal Drive
+
+# This folder ID must be from your Personal Google Drive
+FOLDER_ID = "1mx3Fr-MX1bno7-n0p066OVTmtYK6-E8R"
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 # --- AUTHENTICATION ENGINE ---
 def get_user_creds():
+    # Load OAuth details from your Streamlit Secrets
     client_config = {
         "web": {
             "client_id": st.secrets["G_CLIENT_ID"],
@@ -31,18 +34,18 @@ def get_user_creds():
         redirect_uri=st.secrets["G_REDIRECT_URI"]
     )
     
-    # Handle the redirect from Google
+    # Process the login response from Google
     if "code" in st.query_params:
         flow.fetch_token(code=st.query_params["code"])
         st.session_state.creds = flow.credentials
-        # Clear the code from the URL for a clean UI
         st.query_params.clear()
         return st.session_state.creds
     
+    # Use existing session credentials[cite: 1]
     if "creds" in st.session_state:
         return st.session_state.creds
 
-    # Show Login Link if no creds
+    # Redirect to Google Login if not authenticated[cite: 1]
     auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
     st.warning("Action Required: Please authorize access to your personal Google Drive.")
     st.link_button("🔑 Login with Google", auth_url)
@@ -52,11 +55,12 @@ def get_user_creds():
 def upload_to_drive(file_name, dataframe, creds):
     service = build('drive', 'v3', credentials=creds)
     
+    # Convert data to Parquet in-memory for speed[cite: 1]
     buffer = io.BytesIO()
     dataframe.to_parquet(buffer)
     buffer.seek(0)
     
-    # Logic to check if file exists
+    # Check for existing file to avoid duplicates[cite: 1]
     query = f"name = '{file_name}' and '{FOLDER_ID}' in parents and trashed = false"
     results = service.files().list(q=query, fields="files(id)").execute()
     files = results.get('files', [])
@@ -64,23 +68,25 @@ def upload_to_drive(file_name, dataframe, creds):
     media = MediaIoBaseUpload(buffer, mimetype='application/octet-stream', resumable=True)
     
     if files:
-        # Update existing file
+        # Update current file[cite: 1]
         service.files().update(fileId=files[0]['id'], media_body=media).execute()
     else:
         # Create new file[cite: 1]
         file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
         service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-# --- SYNC FUNCTION ---
+# --- SYNC ENGINE ---
 def sync_data():
     creds = get_user_creds()
-    tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "TATASTEEL.NS", "INFY.NS"] 
+    # List of Nifty stocks to sync[cite: 1]
+    tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "TATASTEEL.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS"] 
     
     progress = st.progress(0)
     status = st.empty()
     
     for i, ticker in enumerate(tickers):
         status.text(f"Syncing {ticker} to your personal Drive...")
+        # Get 2 years of daily historical data[cite: 1]
         df = yf.download(ticker, period="2y", progress=False)
         if not df.empty:
             if isinstance(df.columns, pd.MultiIndex):
@@ -88,8 +94,8 @@ def sync_data():
             upload_to_drive(f"{ticker}.parquet", df, creds)
         progress.progress((i + 1) / len(tickers))
     
-    status.text("Done!")
-    st.success("Successfully synced to your personal storage!")
+    status.text("Market Sync Complete!")
+    st.success("All data is safely stored in your personal Google Drive![cite: 1]")
 
 # --- UI ---
 st.title("🎯 Nifty 500 Personal Drive Scanner")
@@ -100,8 +106,9 @@ with st.sidebar:
         sync_data()
     
     st.markdown("---")
-    logic_input = st.text_area("Strategy Logic", "Close > SMA_20 and RSI > 50")
+    st.header("Settings")
+    logic_input = st.text_area("Scanner Logic", "Close > SMA_20 and RSI > 50")
     run_scan = st.button("🚀 Run Analysis")
 
 if run_scan:
-    st.info("Reading your personal Drive data... Results will appear here.")
+    st.info("Scanner is pulling your personal Drive data... Analysis will appear here.[cite: 1]")
