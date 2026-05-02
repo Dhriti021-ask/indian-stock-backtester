@@ -17,7 +17,11 @@ SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 # --- AUTHENTICATION ENGINE ---
 def get_user_creds():
-    # Load OAuth details from your Streamlit Secrets
+    # Safety Check for Secrets
+    if "G_CLIENT_ID" not in st.secrets:
+        st.error("Missing Secrets! Please add G_CLIENT_ID, G_CLIENT_SECRET, and G_REDIRECT_URI to Streamlit Settings.")
+        st.stop()
+
     client_config = {
         "web": {
             "client_id": st.secrets["G_CLIENT_ID"],
@@ -34,7 +38,7 @@ def get_user_creds():
         redirect_uri=st.secrets["G_REDIRECT_URI"]
     )
     
-    # Process the login response from Google
+    # Process the login response from Google[cite: 1]
     if "code" in st.query_params:
         flow.fetch_token(code=st.query_params["code"])
         st.session_state.creds = flow.credentials
@@ -47,7 +51,7 @@ def get_user_creds():
 
     # Redirect to Google Login if not authenticated[cite: 1]
     auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
-    st.warning("Action Required: Please authorize access to your personal Google Drive.")
+    st.info("To save data to your personal Drive, please authorize the app.")
     st.link_button("🔑 Login with Google", auth_url)
     st.stop()
 
@@ -55,12 +59,10 @@ def get_user_creds():
 def upload_to_drive(file_name, dataframe, creds):
     service = build('drive', 'v3', credentials=creds)
     
-    # Convert data to Parquet in-memory for speed[cite: 1]
     buffer = io.BytesIO()
     dataframe.to_parquet(buffer)
     buffer.seek(0)
     
-    # Check for existing file to avoid duplicates[cite: 1]
     query = f"name = '{file_name}' and '{FOLDER_ID}' in parents and trashed = false"
     results = service.files().list(q=query, fields="files(id)").execute()
     files = results.get('files', [])
@@ -68,17 +70,15 @@ def upload_to_drive(file_name, dataframe, creds):
     media = MediaIoBaseUpload(buffer, mimetype='application/octet-stream', resumable=True)
     
     if files:
-        # Update current file[cite: 1]
         service.files().update(fileId=files[0]['id'], media_body=media).execute()
     else:
-        # Create new file[cite: 1]
         file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
         service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
 # --- SYNC ENGINE ---
 def sync_data():
     creds = get_user_creds()
-    # List of Nifty stocks to sync[cite: 1]
+    # Initial set of tickers to test the sync[cite: 1]
     tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "TATASTEEL.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS"] 
     
     progress = st.progress(0)
@@ -86,7 +86,6 @@ def sync_data():
     
     for i, ticker in enumerate(tickers):
         status.text(f"Syncing {ticker} to your personal Drive...")
-        # Get 2 years of daily historical data[cite: 1]
         df = yf.download(ticker, period="2y", progress=False)
         if not df.empty:
             if isinstance(df.columns, pd.MultiIndex):
@@ -106,9 +105,9 @@ with st.sidebar:
         sync_data()
     
     st.markdown("---")
-    st.header("Settings")
+    st.header("Analysis Settings")
     logic_input = st.text_area("Scanner Logic", "Close > SMA_20 and RSI > 50")
     run_scan = st.button("🚀 Run Analysis")
 
 if run_scan:
-    st.info("Scanner is pulling your personal Drive data... Analysis will appear here.[cite: 1]")
+    st.info("Scanner is pulling your personal Drive data... Analysis results will appear here.[cite: 1]")
